@@ -1,10 +1,7 @@
 import { 
   PlanInputs, 
   PlanOutputs, 
-  ScenarioResult,
-  RoofSurface,
-  SoilType,
-  MainWaterSource
+  ScenarioResult
 } from '../types/rwh';
 import { 
   ROOF_RUNOFF_MAP, 
@@ -14,57 +11,74 @@ import {
   MONTHLY_RAIN_PATTERN
 } from '../data/bengaluruData';
 
+const SQFT_TO_M2 = 0.092903;
+const DEFAULT_COLLECTION_EFFICIENCY = 0.85;
+const DEFAULT_ANNUAL_RAINFALL_MM = 970;
+const DEFAULT_NON_DRINKING_USE_LITRES_PER_DAY = 45;
+const DEFAULT_SHARE_HARVEST_USED = 0.65;
+const DEFAULT_DESIGN_STORM_MM = 25;
+const MIN_OPEN_GROUND_SQFT_FOR_PIT = 50;
+const MIN_TANK_VOLUME_M3 = 1.0;
+const PIT_MEDIA_VOIDS = 0.35;
+const PIT_CAPACITY_M3 = 3.39;
+const DOWNPIPE_COVERAGE_M2 = 50;
+const DUAL_PIPING_ROOF_AREA_THRESHOLD_SQFT = 10000;
+
+const roundTo = (value: number, decimalPlaces: number) => {
+  const factor = 10 ** decimalPlaces;
+  return Math.round(value * factor) / factor;
+};
+
 export function calculateRwhPlan(inputs: PlanInputs): PlanOutputs {
   const plotAreaSqFt = inputs.plotLength * inputs.plotWidth;
-  const SQFT_TO_M2 = 0.092903;
   const roofAreaM2 = inputs.roofAreaSqFt * SQFT_TO_M2;
   const runoffCoefficient = ROOF_RUNOFF_MAP[inputs.roofSurface] ?? 0.80;
-  const collectionEfficiency = 0.85;
-  const annualRainfall = inputs.annualRainfallOverride ?? 970;
+  const collectionEfficiency = DEFAULT_COLLECTION_EFFICIENCY;
+  const annualRainfall = inputs.annualRainfallOverride ?? DEFAULT_ANNUAL_RAINFALL_MM;
 
   // Annual harvest: rainfall (mm) x roof area (m2) x runoff coefficient x collection efficiency
   const estimatedAnnualHarvestLitres = Math.round(
     annualRainfall * roofAreaM2 * runoffCoefficient * collectionEfficiency
   );
-  const estimatedAnnualHarvestKL = Math.round((estimatedAnnualHarvestLitres / 1000) * 10) / 10;
+  const estimatedAnnualHarvestKL = roundTo(estimatedAnnualHarvestLitres / 1000, 1);
 
   // Demand
-  const nonDrinkingLPerDay = inputs.nonDrinkingUseOverride ?? 45;
+  const nonDrinkingLPerDay = inputs.nonDrinkingUseOverride ?? DEFAULT_NON_DRINKING_USE_LITRES_PER_DAY;
   const nonDrinkingDemandLitres = Math.round(inputs.peopleCount * nonDrinkingLPerDay * 365);
 
-  const shareHarvestUsed = inputs.shareHarvestUsedOverride ?? 0.65;
+  const shareHarvestUsed = inputs.shareHarvestUsedOverride ?? DEFAULT_SHARE_HARVEST_USED;
   const waterCouldUseLitres = Math.min(
     Math.round(estimatedAnnualHarvestLitres * shareHarvestUsed),
     nonDrinkingDemandLitres
   );
 
   const shareDemandCoveredPct = nonDrinkingDemandLitres > 0
-    ? Math.min(100, Math.round(((waterCouldUseLitres / nonDrinkingDemandLitres) * 100) * 10) / 10)
+    ? Math.min(100, roundTo((waterCouldUseLitres / nonDrinkingDemandLitres) * 100, 1))
     : 0;
 
   // Design storm volume (m3) = roof m2 * runoff * efficiency * storm depth (m)
-  const designStormDepthMm = inputs.designStormOverride ?? 25;
-  const designStormVolumeM3 = Math.round(
-    roofAreaM2 * runoffCoefficient * collectionEfficiency * (designStormDepthMm / 1000) * 100
-  ) / 100;
+  const designStormDepthMm = inputs.designStormOverride ?? DEFAULT_DESIGN_STORM_MM;
+  const designStormVolumeM3 = roundTo(
+    roofAreaM2 * runoffCoefficient * collectionEfficiency * (designStormDepthMm / 1000)
+  , 2);
 
   const soilDrainsWell = SOIL_DRAINAGE_MAP[inputs.soilType] ?? true;
-  const enoughOpenGround = inputs.openGroundSqFt >= 50;
+  const enoughOpenGround = inputs.openGroundSqFt >= MIN_OPEN_GROUND_SQFT_FOR_PIT;
   const largeOrNonResidential = 
-    inputs.propertyType !== 'Independent house' || inputs.roofAreaSqFt >= 10000;
+    inputs.propertyType !== 'Independent house' || inputs.roofAreaSqFt >= DUAL_PIPING_ROOF_AREA_THRESHOLD_SQFT;
 
   // Tank sizing: Smaller of 15 days demand and design storm volume; min 1 m3; steps of 0.5 m3
   const fifteenDaysDemandM3 = (inputs.peopleCount * nonDrinkingLPerDay * 15) / 1000;
   const rawTankVol = Math.min(fifteenDaysDemandM3, designStormVolumeM3);
-  const tankVolumeM3 = Math.max(1.0, Math.round(rawTankVol * 2) / 2);
+  const tankVolumeM3 = Math.max(MIN_TANK_VOLUME_M3, Math.round(rawTankVol * 2) / 2);
   const tankCapacityLitres = Math.round(tankVolumeM3 * 1000);
 
   // Tank dimensions: 1.5m water depth (2.0m above 10m3) + 0.3m freeboard
   const tankWaterDepthM = tankVolumeM3 > 10 ? 2.0 : 1.5;
-  const tankPlanAreaM2 = Math.round((tankVolumeM3 / tankWaterDepthM) * 100) / 100;
+  const tankPlanAreaM2 = roundTo(tankVolumeM3 / tankWaterDepthM, 2);
   // Length : width of 1.5 : 1
-  const tankLengthM = Math.round(Math.sqrt(tankPlanAreaM2 * 1.5) * 10) / 10;
-  const tankWidthM = Math.round((tankPlanAreaM2 / (tankLengthM || 1)) * 10) / 10;
+  const tankLengthM = roundTo(Math.sqrt(tankPlanAreaM2 * 1.5), 1);
+  const tankWidthM = roundTo(tankPlanAreaM2 / (tankLengthM || 1), 1);
 
   // Look up area stress index
   const areaData = BENGALURU_AREAS.find(a => a.name === inputs.area) || BENGALURU_AREAS[0];
@@ -89,27 +103,26 @@ export function calculateRwhPlan(inputs: PlanInputs): PlanOutputs {
   // Recharge volume
   const rechargeVolumeToHandleM3 = Math.max(
     0, 
-    Math.round((designStormVolumeM3 - (designStormVolumeM3 / 2)) * 100) / 100
+    roundTo(designStormVolumeM3 / 2, 2)
   );
   
-  const pitMediaVoids = 0.35;
   const pitOrTrenchVolumeM3 = rechargeStructureType === 'Recharge pit'
-    ? Math.round((rechargeVolumeToHandleM3 / pitMediaVoids) * 100) / 100
+    ? roundTo(rechargeVolumeToHandleM3 / PIT_MEDIA_VOIDS, 2)
     : 0;
 
   // Circular pit 1.2m dia x 3.0m deep -> volume = pi * r^2 * h = 3.39 m3
-  const capacityOfOnePitM3 = 3.39;
+  const capacityOfOnePitM3 = PIT_CAPACITY_M3;
   const numberOfPits = rechargeStructureType === 'Recharge pit'
-    ? Math.max(1, Math.ceil(pitOrTrenchVolumeM3 / capacityOfOnePitM3))
+    ? Math.max(1, Math.ceil(pitOrTrenchVolumeM3 / PIT_CAPACITY_M3))
     : 0;
 
   const useTrenchInstead = numberOfPits > 4;
   const trenchLengthM = useTrenchInstead
-    ? Math.round((pitOrTrenchVolumeM3 / (1.0 * 1.5)) * 10) / 10
+    ? roundTo(pitOrTrenchVolumeM3 / (1.0 * 1.5), 1)
     : 0;
 
   // Downpipes: 100 mm, ~1 per 50 m2 of roof
-  const downpipeEstimate = Math.max(1, Math.ceil(roofAreaM2 / 50));
+  const downpipeEstimate = Math.max(1, Math.ceil(roofAreaM2 / DOWNPIPE_COVERAGE_M2));
 
   // Costs (Low and High ends)
   // Storage tank: ₹9 to ₹16 per L
@@ -123,7 +136,7 @@ export function calculateRwhPlan(inputs: PlanInputs): PlanOutputs {
   if (rechargeStructureType === 'Recharge well') {
     costRechargeStructure = { low: 30000, high: 70000 };
   } else if (rechargeStructureType === 'Recharge pit') {
-    const vol = Math.max(pitOrTrenchVolumeM3, 3.39);
+    const vol = Math.max(pitOrTrenchVolumeM3, PIT_CAPACITY_M3);
     costRechargeStructure = {
       low: Math.round(vol * 4000),
       high: Math.round(vol * 8000)
@@ -176,7 +189,7 @@ export function calculateRwhPlan(inputs: PlanInputs): PlanOutputs {
 
   return {
     plotAreaSqFt,
-    roofAreaM2: Math.round(roofAreaM2 * 10) / 10,
+    roofAreaM2: roundTo(roofAreaM2, 1),
     runoffCoefficient,
     estimatedAnnualHarvestLitres,
     estimatedAnnualHarvestKL,
@@ -219,41 +232,28 @@ export function calculateCostScenarios(
   outputs: PlanOutputs
 ): ScenarioResult[] {
   const baseWaterPrice = inputs.customWaterPrice ?? WATER_SOURCE_PRICES[inputs.mainWaterSource];
+  const getRangeValue = (range: { low: number; high: number }, costEnd: 'high' | 'mid' | 'low') => {
+    if (costEnd === 'high') return range.high;
+    if (costEnd === 'low') return range.low;
+    return Math.round((range.low + range.high) / 2);
+  };
 
   const buildScenario = (
     name: 'Conservative' | 'Base' | 'Optimistic',
     priceFactor: number,
-    shareUsedLimit: number | null,
     costEnd: 'high' | 'mid' | 'low'
   ): ScenarioResult => {
-    let installCost: number;
-    let upkeep: number;
-
-    if (inputs.customInstallCost !== undefined) {
-      installCost = inputs.customInstallCost;
-    } else {
-      if (costEnd === 'high') installCost = outputs.totalInstallCost.high;
-      else if (costEnd === 'low') installCost = outputs.totalInstallCost.low;
-      else installCost = Math.round((outputs.totalInstallCost.low + outputs.totalInstallCost.high) / 2);
-    }
-
-    if (inputs.customUpkeepCost !== undefined) {
-      upkeep = inputs.customUpkeepCost;
-    } else {
-      if (costEnd === 'high') upkeep = outputs.yearlyUpkeepCost.high;
-      else if (costEnd === 'low') upkeep = outputs.yearlyUpkeepCost.low;
-      else upkeep = Math.round((outputs.yearlyUpkeepCost.low + outputs.yearlyUpkeepCost.high) / 2);
-    }
-
-    const priceUsed = Math.round(baseWaterPrice * priceFactor * 1000) / 1000;
+    const installCost = inputs.customInstallCost ?? getRangeValue(outputs.totalInstallCost, costEnd);
+    const upkeep = inputs.customUpkeepCost ?? getRangeValue(outputs.yearlyUpkeepCost, costEnd);
+    const priceUsed = roundTo(baseWaterPrice * priceFactor, 3);
 
     let shareHarvestUsed: number;
     if (name === 'Conservative') {
-      shareHarvestUsed = Math.min(inputs.shareHarvestUsedOverride ?? 0.65, 0.50);
+      shareHarvestUsed = Math.min(inputs.shareHarvestUsedOverride ?? DEFAULT_SHARE_HARVEST_USED, 0.50);
     } else if (name === 'Optimistic') {
-      shareHarvestUsed = Math.max(inputs.shareHarvestUsedOverride ?? 0.65, 0.80);
+      shareHarvestUsed = Math.max(inputs.shareHarvestUsedOverride ?? DEFAULT_SHARE_HARVEST_USED, 0.80);
     } else {
-      shareHarvestUsed = inputs.shareHarvestUsedOverride ?? 0.65;
+      shareHarvestUsed = inputs.shareHarvestUsedOverride ?? DEFAULT_SHARE_HARVEST_USED;
     }
 
     const waterUsedLitres = Math.min(
@@ -265,10 +265,10 @@ export function calculateCostScenarios(
     const netSavingAfterUpkeep = savingPerYear - upkeep;
 
     const simplePaybackYears = netSavingAfterUpkeep > 0
-      ? Math.round((installCost / netSavingAfterUpkeep) * 10) / 10
+      ? roundTo(installCost / netSavingAfterUpkeep, 1)
       : null;
 
-    const tankerLoadsAvoidedPerYear = Math.round((waterUsedLitres / 12000) * 10) / 10;
+    const tankerLoadsAvoidedPerYear = roundTo(waterUsedLitres / 12000, 1);
 
     // 10 year cumulative cash flow
     const cumulative10Years: number[] = [];
@@ -297,9 +297,9 @@ export function calculateCostScenarios(
   };
 
   return [
-    buildScenario('Conservative', 0.6, 0.50, 'high'),
-    buildScenario('Base', 1.0, null, 'mid'),
-    buildScenario('Optimistic', 1.4, 0.80, 'low')
+    buildScenario('Conservative', 0.6, 'high'),
+    buildScenario('Base', 1.0, 'mid'),
+    buildScenario('Optimistic', 1.4, 'low')
   ];
 }
 
