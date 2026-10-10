@@ -1,0 +1,6 @@
+{
+  "name": "Male Neeru - Bengaluru Rainwater Harvesting Planner",
+  "description": "Interactive rainwater harvesting planner, water-stress map, ROI calculator, and citizen reporting hub designed for Bengaluru's water crisis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
